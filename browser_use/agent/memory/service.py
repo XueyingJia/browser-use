@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import logging
 import os
 
@@ -39,7 +40,7 @@ class Memory:
 
 		# Initialize configuration with defaults based on the LLM if not provided
 		if config is None:
-			self.config = MemoryConfig(llm_instance=llm, agent_id=f'agent_{id(self)}')
+			self.config = MemoryConfig(llm_instance=llm) #, agent_id=f'agent_{id(self)}'
 
 			# Set appropriate embedder based on LLM type
 			llm_class = llm.__class__.__name__

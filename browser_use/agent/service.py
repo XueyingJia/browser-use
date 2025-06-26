@@ -30,6 +30,8 @@ from pydantic import BaseModel, ValidationError
 
 from browser_use.agent.gif import create_history_gif
 from browser_use.agent.memory import Memory, MemoryConfig
+from browser_use.agent.memory.selective_memory import SelectiveMemory
+
 from browser_use.agent.message_manager.service import MessageManager, MessageManagerSettings
 from browser_use.agent.message_manager.utils import (
 	convert_input_messages,
@@ -274,11 +276,17 @@ class Agent(Generic[Context]):
 		if self.enable_memory:
 			try:
 				# Initialize memory
-				self.memory = Memory(
-					message_manager=self._message_manager,
-					llm=self.llm,
-					config=self.memory_config,
+				# self.memory = Memory(
+				# 	message_manager=self._message_manager,
+				# 	llm=self.llm,
+				# 	config=self.memory_config,
+				# )
+				self.memory = SelectiveMemory(
+					config=self.memory_config, 
+					message_manager=self.message_manager,
+					llm=self.llm
 				)
+
 			except ImportError:
 				logger.warning(
 					'⚠️ Agent(enable_memory=True) is set but missing some required packages, install and re-run to use memory features: pip install browser-use[memory]'
@@ -1306,6 +1314,9 @@ class Agent(Generic[Context]):
 	) -> AgentHistoryList:
 		"""Execute the task with maximum number of steps"""
 
+		# retrieve related memories before processing the task
+		self.memory.inject_memories_to_context(self.task)
+
 		loop = asyncio.get_event_loop()
 		agent_run_error: str | None = None  # Initialize error tracking variable
 		self._force_exit_telemetry_logged = False  # ADDED: Flag for custom telemetry on force exit
@@ -1367,7 +1378,14 @@ class Agent(Generic[Context]):
 
 				step_info = AgentStepInfo(step_number=step, max_steps=max_steps)
 				await self.step(step_info)
-
+				
+				# collecting new messages for memory if enabled
+				if self.enable_memory and self.memory:
+					# collect the latest last two messages from the history
+					new_messages = self._message_manager.state.history.get_messages()[-2:]
+					for message in new_messages:
+						self.memory.collect_message(message)
+				
 				if on_step_end is not None:
 					await on_step_end(self)
 
@@ -1375,6 +1393,11 @@ class Agent(Generic[Context]):
 					if self.settings.validate_output and step < max_steps - 1:
 						if not await self._validate_output():
 							continue
+					
+					# Store successful trajectory in memory if enabled
+					if self.enable_memory and self.memory:
+						success = self.state.history.is_successful()
+						self.memory.store_successful_trajectory(success, self.task)
 
 					await self.log_completion()
 					break
