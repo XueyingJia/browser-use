@@ -262,7 +262,8 @@ Approach: {content}
         memory_texts = [self.format_memory_for_context(m) for m in memories]
         combined_memory = "\n\n".join(memory_texts)
 
-        logger.info(f"Found {len(memories)} relevant memories for task: {task_query[:50]}...")
+        logger.info(f"Found {len(memories)} relevant memories for task: {task_query}")
+        logger.info(f"Combined memory content:\n{combined_memory}")  # log first 200 chars for brevity
         
         # create a memory message to inject into the context
         memory_message = HumanMessage(
