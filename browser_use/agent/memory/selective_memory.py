@@ -84,66 +84,75 @@ class SelectiveMemory(Memory):
         self.trajectory_messages = []
     
     def store_successful_trajectory(self, success: bool, task: str) -> Optional[str]:
-        """Store trajectory only if task was successful"""
+        """Store trajectory in simplified format from openai message format"""
         if not success or not self.trajectory_messages:
             logger.info("Not storing trajectory: Task unsuccessful or no messages")
             self.clear_trajectory()
             return None
         
-        logger.info(f"Task successful - storing trajectory of {len(self.trajectory_messages)} messages in Chroma")
+        logger.info(f"Task successful - storing trajectory of {len(self.trajectory_messages)} messages")
         
         try:
-            task_description = task
-            
-            # convert to OpenAI messages format
+            # 将消息转换为OpenAI格式
             parsed_messages = convert_to_openai_messages(self.trajectory_messages)
+            logger.info(f"Converted messages to OpenAI format: {len(parsed_messages)} messages")
             
-            # reconstruct messages to ensure each has meaningful content
-            reconstructed_messages = []
-            for msg in parsed_messages:
-                if isinstance(msg, dict):
-                    content = ""
-                    
-                    # if we have tool_calls, abstract function calls and arguments
-                    if msg.get('tool_calls'):
-                        for tool_call in msg['tool_calls']:
-                            if tool_call.get('function'):
-                                func_name = tool_call['function'].get('name', '')
-                                func_args = tool_call['function'].get('arguments', '{}')
-                                content += f"Called {func_name} with arguments: {func_args}\n"
-                    
-                    # if the content is empty but we have nonempty extracted content above, use it
-                    if not msg.get('content') and content:
-                        msg['content'] = content
-                        
-                    # if still no content, add a placeholder
-                    if not msg.get('content'):
-                        msg['content'] = f"Message of role: {msg.get('role', 'unknown')}"
-                        
-                    reconstructed_messages.append(msg)
+            # 提取轨迹步骤信息，简化为类似 simple.py 的 action_history 格式
+            simplified_trajectory = []
+            step_number = 0
             
-            logger.info(f"Reconstructed {len(reconstructed_messages)} messages with content")
+            # 遍历OpenAI格式的消息
+            for i, msg in enumerate(parsed_messages):
+                # 如果是助手消息并且有工具调用
+                if msg.get('role') == 'assistant' and 'tool_calls' in msg:
+                    for tool_call in msg.get('tool_calls', []):
+                        if tool_call.get('function', {}).get('name') == 'AgentOutput':
+                            step_number += 1
+                            try:
+                                # 解析函数参数
+                                args_str = tool_call.get('function', {}).get('arguments', '{}')
+                                args = json.loads(args_str)
+                                
+                                # 提取current_state和action
+                                if 'current_state' in args and 'action' in args:
+                                    next_goal = args['current_state'].get('next_goal', 'Unknown goal')
+                                    actions = args['action']
+                                    
+                                    action_details = []
+                                    for action in actions:
+                                        # 每个action只有一个键，表示动作类型
+                                        if action:
+                                            action_name = next(iter(action.keys())) if action else 'unknown'
+                                            action_params = action.get(action_name, {})
+                                            action_details.append(f"{action_name}({action_params})")
+                                    
+                                    # 格式化为与simple.py相同的格式
+                                    combined_action = f"Step {step_number}: {next_goal} -> {', '.join(action_details)}"
+                                    simplified_trajectory.append(combined_action)
+                                    logger.info(f"Added action: {combined_action}")
+                            except Exception as e:
+                                logger.warning(f"Error parsing tool call: {e}")
+                                args_str = tool_call.get('function', {}).get('arguments', '{}')
+                                simplified_trajectory.append(f"Step {step_number}: Parse error -> AgentOutput({args_str[:50]}...)")
             
-            # create a summary of the trajectory for indexing
-            trajectory_summary = f"Task: {task_description}\n\nSteps:"
-            for i, msg in enumerate(reconstructed_messages):
-                if msg.get('content'):
-                    trajectory_summary += f"\nStep {i+1}: {msg['content']}"
-                    
-            logger.info(f"Created trajectory summary of length {len(trajectory_summary)}")
+            # 如果没有提取到有效步骤，添加基本信息
+            if not simplified_trajectory:
+                simplified_trajectory.append(f"Task executed: {task}")
+                
+            logger.info(f"Created simplified trajectory with {len(simplified_trajectory)} steps")
             
-            # create unique ID and filename
+            # 创建唯一 ID 和文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{timestamp}_success.json"
             memory_id = f"memory_{timestamp}"
             
-            # save as a JSON file
+            # 保存为JSON文件，使用与 simple.py 相同的格式
             memory_data = {
-                "task": task_description,
+                "memory_id": memory_id,
+                "task": task,
+                "action_history": simplified_trajectory,
                 "timestamp": datetime.now().isoformat(),
-                "summary": trajectory_summary,
-                "messages": reconstructed_messages,
-                "id": memory_id
+                "success": True
             }
             
             file_path = os.path.join(self.storage_dir, filename)
@@ -152,21 +161,23 @@ class SelectiveMemory(Memory):
                 
             logger.info(f"Successfully stored memory to {file_path}")
             
-            # try to add new item to the vector database
+            # 创建轨迹摘要用于向量检索
+            trajectory_summary = f"Task: {task}\n\nSteps:\n" + "\n".join(simplified_trajectory)
+            
+            # 将轨迹信息添加到向量数据库
             try:
-                # add the trajectory info to the vector database
                 self.vector_db.add_texts(
                     texts=[trajectory_summary],
                     metadatas=[{
-                        'task': task_description,
-                        'steps': len(self.trajectory_messages),
+                        'task': task,
+                        'steps': len(simplified_trajectory),
                         'file_path': file_path,
                         'id': memory_id
                     }],
                     ids=[memory_id]
                 )
                 
-                # try to persist the Chroma database
+                # 尝试持久化 Chroma 数据库
                 try:
                     if hasattr(self.vector_db, '_collection') and hasattr(self.vector_db._collection, 'persist'):
                         self.vector_db._collection.persist()
@@ -183,7 +194,7 @@ class SelectiveMemory(Memory):
             except Exception as db_err:
                 logger.warning(f"Failed to store in Chroma (falling back to file storage only): {db_err}")
                 
-            return f"Stored successful trajectory for task: {task_description[:50]}..."
+            return f"Stored successful trajectory for task: {task[:50]}..."
                 
         except Exception as e:
             logger.error(f"Error storing successful trajectory: {e}", exc_info=True)
@@ -214,7 +225,7 @@ class SelectiveMemory(Memory):
                 # convert results to standard memory format
                 for doc, score in results:
                     # convert distance score to similarity (0 distance score is the most similar one, then the similarity as 1.0 is most similar)
-                    similarity = 1.0 - min(score, 1.0)
+                    similarity = score
                     
                     memories.append({
                         "content": doc.page_content,
@@ -230,7 +241,7 @@ class SelectiveMemory(Memory):
             logger.warning(f"Error retrieving from Chroma, falling back to file-based retrieval: {db_err}")
         
         # ensure results are sorted by similarity and limited to the specified number
-        memories.sort(key=lambda x: x["metadata"].get("similarity", 0), reverse=True)
+        memories.sort(key=lambda x: x["metadata"].get("similarity", 0))
         return memories[:limit]
     
     def format_memory_for_context(self, memory: Dict[str, Any]) -> str:
