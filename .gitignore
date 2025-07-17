@@ -45,3 +45,7 @@ CLAUDE.local.md
 uv.lock
 temp
 tmp
+
+examples/task_execution_*/
+dataset/*
+examples/browser_use_memories
