@@ -93,40 +93,40 @@ class SelectiveMemory(Memory):
         logger.info(f"Task successful - storing trajectory of {len(self.trajectory_messages)} messages")
         
         try:
-            # 将消息转换为OpenAI格式
+            # Convert messages to OpenAI format
             parsed_messages = convert_to_openai_messages(self.trajectory_messages)
             logger.info(f"Converted messages to OpenAI format: {len(parsed_messages)} messages")
             
-            # 提取轨迹步骤信息，简化为类似 simple.py 的 action_history 格式
+            # Extract trajectory step information, simplify to a format similar to action_history in simple.py
             simplified_trajectory = []
             step_number = 0
             
-            # 遍历OpenAI格式的消息
+            # Iterate through messages in OpenAI format
             for i, msg in enumerate(parsed_messages):
-                # 如果是助手消息并且有工具调用
+                # If it's an assistant message and has tool calls
                 if msg.get('role') == 'assistant' and 'tool_calls' in msg:
                     for tool_call in msg.get('tool_calls', []):
                         if tool_call.get('function', {}).get('name') == 'AgentOutput':
                             step_number += 1
                             try:
-                                # 解析函数参数
+                                # Parse function arguments
                                 args_str = tool_call.get('function', {}).get('arguments', '{}')
                                 args = json.loads(args_str)
-                                
-                                # 提取current_state和action
+
+                                # Extract current_state and action
                                 if 'current_state' in args and 'action' in args:
                                     next_goal = args['current_state'].get('next_goal', 'Unknown goal')
                                     actions = args['action']
                                     
                                     action_details = []
                                     for action in actions:
-                                        # 每个action只有一个键，表示动作类型
+                                        # Each action has only one key, indicating the action type
                                         if action:
                                             action_name = next(iter(action.keys())) if action else 'unknown'
                                             action_params = action.get(action_name, {})
                                             action_details.append(f"{action_name}({action_params})")
-                                    
-                                    # 格式化为与simple.py相同的格式
+
+                                    # Format to match simple.py
                                     combined_action = f"Step {step_number}: {next_goal} -> {', '.join(action_details)}"
                                     simplified_trajectory.append(combined_action)
                                     logger.info(f"Added action: {combined_action}")
@@ -134,19 +134,18 @@ class SelectiveMemory(Memory):
                                 logger.warning(f"Error parsing tool call: {e}")
                                 args_str = tool_call.get('function', {}).get('arguments', '{}')
                                 simplified_trajectory.append(f"Step {step_number}: Parse error -> AgentOutput({args_str[:50]}...)")
-            
-            # 如果没有提取到有效步骤，添加基本信息
+
+            # If no valid steps were extracted, add basic information
             if not simplified_trajectory:
                 simplified_trajectory.append(f"Task executed: {task}")
                 
             logger.info(f"Created simplified trajectory with {len(simplified_trajectory)} steps")
-            
-            # 创建唯一 ID 和文件名
+            # Create unique ID and filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{timestamp}_success.json"
             memory_id = f"memory_{timestamp}"
-            
-            # 保存为JSON文件，使用与 simple.py 相同的格式
+
+            # Save as JSON file, using the same format as simple.py
             memory_data = {
                 "memory_id": memory_id,
                 "task": task,
@@ -160,11 +159,11 @@ class SelectiveMemory(Memory):
                 json.dump(memory_data, f, indent=2)
                 
             logger.info(f"Successfully stored memory to {file_path}")
-            
-            # 创建轨迹摘要用于向量检索
+
+            # Create trajectory summary for vector retrieval
             trajectory_summary = f"Task: {task}\n\nSteps:\n" + "\n".join(simplified_trajectory)
-            
-            # 将轨迹信息添加到向量数据库
+
+            # Add trajectory information to vector database
             try:
                 self.vector_db.add_texts(
                     texts=[trajectory_summary],
@@ -176,8 +175,8 @@ class SelectiveMemory(Memory):
                     }],
                     ids=[memory_id]
                 )
-                
-                # 尝试持久化 Chroma 数据库
+
+                # Try to persist Chroma database
                 try:
                     if hasattr(self.vector_db, '_collection') and hasattr(self.vector_db._collection, 'persist'):
                         self.vector_db._collection.persist()
