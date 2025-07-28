@@ -14,7 +14,7 @@ load_dotenv()
 
 
 task = """Find cats available for adoption within 10 miles of zip code 94587, Young or adult-age cats, sorted by Oldest Addition. Operated within https://www.petfinder.com/ website."""
-task_id = "c94551d2b18f9ad0ab31b0bd98ca42e3"
+task_id = "test"
 
 # create a directory to save screenshots and conversations
 task_result_dir = f"task_execution_{task_id}"
